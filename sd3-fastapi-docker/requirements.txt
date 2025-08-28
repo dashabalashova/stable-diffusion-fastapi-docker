@@ -1,0 +1,16 @@
+# Hugging Face stack
+diffusers>=0.31.0
+transformers>=4.44.0
+accelerate>=0.33.0
+safetensors>=0.4.3
+sentencepiece
+protobuf==4.25.3
+
+# Vision
+torchvision==0.23.0
+
+# API
+fastapi
+uvicorn[standard]
+pillow
+hf_transfer
