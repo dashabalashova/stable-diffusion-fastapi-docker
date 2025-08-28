@@ -51,15 +51,8 @@ nvcc --version
 
 Expected output:
 
-- Python 3.12+  
-- CUDA 12.8+  
-
-Create a working directory:
-
-```bash
-mkdir sd3-fastapi-docker
-cd sd3-fastapi-docker
-```
+- Python 3.12+
+- CUDA 12.8+
 
 ---
 
