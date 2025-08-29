@@ -17,3 +17,6 @@ hf_transfer
 
 # Web UI
 gradio
+
+# Client
+requests

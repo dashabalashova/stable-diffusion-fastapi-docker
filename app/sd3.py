@@ -14,6 +14,6 @@ def generate_image(prompt: str, num_inference_steps: int = 4):
     image = pipe(
         prompt,
         num_inference_steps=num_inference_steps,
-        guidance_scale=0.0       # turbo без CFG
+        guidance_scale=0.0
     ).images[0]
     return image

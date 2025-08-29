@@ -78,12 +78,14 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
  && pip install -U xformers --index-url https://download.pytorch.org/whl/cu128
 
-# enable hf_transfer for faster Hugging Face downloads
+# enable hf_transfer
 ENV HF_HUB_ENABLE_HF_TRANSFER=1
 
 COPY app ./app
 
 EXPOSE 8000 7860
+
+# By default we launch FastAPI, but this can be overridden
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
@@ -127,14 +129,14 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Loading model: {MODEL_ID} ...")
 pipe = StableDiffusion3Pipeline.from_pretrained(
     MODEL_ID,
-    torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+    torch_dtype=torch.float16 if device == "cuda" else torch.float32
 ).to(device)
 
 def generate_image(prompt: str, num_inference_steps: int = 4):
     image = pipe(
         prompt,
         num_inference_steps=num_inference_steps,
-        guidance_scale=0.0       # turbo mode without CFG
+        guidance_scale=0.0
     ).images[0]
     return image
 ```
@@ -147,7 +149,7 @@ def generate_image(prompt: str, num_inference_steps: int = 4):
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from io import BytesIO
-from app.sd3 import generate_image   # absolute import
+from .sd3 import generate_image
 
 app = FastAPI()
 
@@ -170,7 +172,7 @@ def generate(prompt: str):
 
 ```python
 import gradio as gr
-from app.sd3 import generate_image
+from .sd3 import generate_image
 
 def infer(prompt):
     image = generate_image(prompt)
@@ -179,7 +181,7 @@ def infer(prompt):
 def launch_gradio():
     demo = gr.Interface(
         fn=infer,
-        inputs=gr.Textbox(label="Prompt", placeholder="A cute dragon in Amsterdam, watercolor"),
+        inputs=gr.Textbox(label="Prompt", placeholder="A small dragon drinking coffee in Amsterdam, watercolor"),
         outputs=gr.Image(type="pil"),
         title="Stable Diffusion 3.5 Turbo WebUI",
         description="Enter a prompt and generate an image with Stable Diffusion 3.5 Turbo"

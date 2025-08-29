@@ -13,5 +13,5 @@ COPY app ./app
 
 EXPOSE 8000 7860
 
-# По умолчанию запускаем FastAPI, но можно переопределить
+# By default we launch FastAPI, but this can be overridden
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
