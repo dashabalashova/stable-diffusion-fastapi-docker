@@ -301,7 +301,7 @@ You will see an interactive interface to enter prompts and view generated images
 
 ---
 
-## 8. Done 🎉
+## 8. Done
 
 You now have a **Stable Diffusion 3.5 Turbo inference server** running in two modes:  
 
