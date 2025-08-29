@@ -4,6 +4,8 @@ This tutorial explains how to deploy **Stable Diffusion 3.5 Turbo** as a **FastA
 
 ![Dragon](images/dragon.png)
 
+---
+
 ## 1. Create GPU VM
 
 1. Open [Nebius Console](https://console.nebius.com/compute).  
@@ -26,7 +28,7 @@ This tutorial explains how to deploy **Stable Diffusion 3.5 Turbo** as a **FastA
    - In Nebius Console → **Add credentials**:  
      - **Username**: choose your login name  
      - **Public key**: paste the contents of `id_ed25519.pub`  
-5. Finish VM creation. 
+5. Finish VM creation.  
 6. In [Nebius Console](https://console.nebius.com/compute):  
    - Open the **Compute** section.  
    - Find your created VM in the list (look for the name `stable-diffusion`).  
@@ -54,11 +56,18 @@ Expected output:
 - Python 3.12+
 - CUDA 12.8+
 
+Download the project:
+
+```bash
+git clone https://github.com/dashabalashova/stable-diffusion-fastapi-docker.git
+cd stable-diffusion-fastapi-docker
+```
+
 ---
 
-## 3. Dockerfile
+## 3. Project Files
 
-Create `Dockerfile` that defines the container image (you can do this with `nano Dockerfile` and copy-paste the code below):
+### Dockerfile
 
 ```dockerfile
 FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime
@@ -69,20 +78,18 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
  && pip install -U xformers --index-url https://download.pytorch.org/whl/cu128
 
+# enable hf_transfer for faster Hugging Face downloads
+ENV HF_HUB_ENABLE_HF_TRANSFER=1
+
 COPY app ./app
 
-EXPOSE 8000
+EXPOSE 8000 7860
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
-
 ```
-
-We use the official PyTorch base image with CUDA 12.8 and cuDNN 9 runtime to enable GPU acceleration. The requirements.txt file is copied and installed, followed by xformers (optimized attention kernels for diffusion models). Next, we copy the application source code (app/ folder with main.py and sd3.py) into the container so that FastAPI can be launched inside the image. Finally, port 8000 is exposed, and uvicorn is set as the container entrypoint. Finally, the application code is added, port 8000 is exposed, and uvicorn launches the FastAPI server as the container entrypoint.
 
 ---
 
-## 4. Requirements
-
-Create `requirements.txt` that lists all the Python dependencies for the project:
+### requirements.txt
 
 ```txt
 # Hugging Face stack
@@ -101,25 +108,14 @@ fastapi
 uvicorn[standard]
 pillow
 hf_transfer
-```
 
-* The Hugging Face stack provides the core functionality for Stable Diffusion (model loading, tokenization, inference).
-* TorchVision adds essential computer vision utilities.
-* The API stack (FastAPI + Uvicorn) enables serving the model as a web service, while Pillow handles image saving/streaming.
-* hf_transfer speeds up downloading large models from Hugging Face.
+# Web UI
+gradio
+```
 
 ---
 
-## 5. FastAPI Application
-
-Create app folder:
-
-```bash
-mkdir app
-cd app
-```
-
-Create `sd3.py`:
+### app/sd3.py
 
 ```python
 import torch
@@ -132,7 +128,6 @@ print(f"Loading model: {MODEL_ID} ...")
 pipe = StableDiffusion3Pipeline.from_pretrained(
     MODEL_ID,
     torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-    safety_checker=None,        # disable safety checker
 ).to(device)
 
 def generate_image(prompt: str, num_inference_steps: int = 4):
@@ -144,22 +139,15 @@ def generate_image(prompt: str, num_inference_steps: int = 4):
     return image
 ```
 
-This module loads the Stable Diffusion 3.5 Turbo pipeline from Hugging Face and provides a helper function to generate images:
+---
 
-* MODEL_ID points to the chosen model on Hugging Face (adamo1139/stable-diffusion-3.5-large-turbo-ungated).
-* The pipeline is loaded once at startup and moved to GPU (cuda) if available.
-* torch_dtype=torch.float16 ensures efficient GPU usage.
-* safety_checker=None disables filtering of generated images (for maximum performance).
-* The function generate_image(prompt, num_inference_steps) takes a text prompt and returns the generated PIL image.
-* guidance_scale=0.0 is used for turbo mode (no classifier-free guidance).
-
-Create `main.py`:
+### app/main.py
 
 ```python
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from io import BytesIO
-from .sd3 import generate_image
+from app.sd3 import generate_image   # absolute import
 
 app = FastAPI()
 
@@ -176,59 +164,148 @@ def generate(prompt: str):
     return StreamingResponse(buf, media_type="image/png")
 ```
 
-This module defines the FastAPI service:
-* The / route provides a simple health check.
-* The /generate route accepts a text prompt (?prompt=...) and calls generate_image().
-* The generated image is stored in an in-memory buffer (BytesIO) and streamed back as PNG.
+---
+
+### app/webui.py
+
+```python
+import gradio as gr
+from app.sd3 import generate_image
+
+def infer(prompt):
+    image = generate_image(prompt)
+    return image
+
+def launch_gradio():
+    demo = gr.Interface(
+        fn=infer,
+        inputs=gr.Textbox(label="Prompt", placeholder="A cute dragon in Amsterdam, watercolor"),
+        outputs=gr.Image(type="pil"),
+        title="Stable Diffusion 3.5 Turbo WebUI",
+        description="Enter a prompt and generate an image with Stable Diffusion 3.5 Turbo"
+    )
+    demo.launch(server_name="0.0.0.0", server_port=7860)
+
+if __name__ == "__main__":
+    launch_gradio()
+```
 
 ---
 
-## 6. Build and Run Docker Container
+### client.py
 
-Go back to project root:
+```python
+import argparse
+import requests
 
-```bash
-cd ..
+def main():
+    parser = argparse.ArgumentParser(description="Stable Diffusion 3.5 Turbo client")
+    parser.add_argument("--prompt", type=str, required=True, help="Text prompt for image generation")
+    parser.add_argument("--host", type=str, default="localhost", help="API host (default: localhost)")
+    parser.add_argument("--port", type=int, default=8000, help="API port (default: 8000)")
+    parser.add_argument("--output", type=str, default="output.png", help="Output image filename")
+    args = parser.parse_args()
+
+    api_url = f"http://{args.host}:{args.port}/generate"
+    print(f"➡️ Sending request to {api_url} ...")
+
+    response = requests.get(api_url, params={"prompt": args.prompt})
+    if response.status_code == 200:
+        with open(args.output, "wb") as f:
+            f.write(response.content)
+        print(f"✅ Image saved as {args.output}")
+    else:
+        print("❌ Error:", response.status_code, response.text)
+
+if __name__ == "__main__":
+    main()
 ```
 
-Enable Docker for User: 
+---
+
+## 4. Build Docker Image
+
+Enable Docker for your user: 
 
 ```bash
 sudo usermod -aG docker "$USER"
 newgrp docker
 ```
 
-Build and Run Docker Container:
+Build image:
 
 ```bash
-docker build -t sd3-fastapi .
-docker run --gpus all -p 8000:8000 sd3-fastapi
+docker build -t sd3 .
 ```
 
 ---
 
-## 7. Test the API
+## 5. Run Service (Options)
 
-### From VM itself:
+### Run API (FastAPI)
+
+```bash
+docker run --gpus all -p 8000:8000 sd3 uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+### Run WebUI (Gradio)
+
+```bash
+docker run --gpus all -p 7860:7860 sd3 python -m app.webui
+```
+
+---
+
+## 6. Test API
+
+### Curl (from VM)
 
 ```bash
 curl "http://localhost:8000/generate?prompt=a+small+friendly+dragon+reading+a+bedtime+story+to+forest+animals,+soft+watercolor+textures,+pastel+palette,+rounded+shapes,+whimsical+illustration,+light+paper+grain,+heartwarming+mood" --output dragon.png
 ```
 
-### From local machine:
+### Python Client (local VM)
 
 ```bash
-curl "http://<Public-IP>:8000/generate?prompt=a+small+friendly+dragon+reading+a+bedtime+story+to+forest+animals,+soft+watercolor+textures,+pastel+palette,+rounded+shapes,+whimsical+illustration,+light+paper+grain,+heartwarming+mood" --output dragon.png
+python3 client.py --prompt "a small friendly dragon reading a bedtime story to forest animals, soft watercolor textures, pastel palette, rounded shapes, whimsical illustration, light paper grain, heartwarming mood" --output "dragon.png"
+```
+
+### Python Client (remote from your laptop)
+
+Install dependency:
+```bash
+pip install requests
+```
+
+Run with public IP:
+```bash
+python3 client.py --host <Public-IP> --prompt "a small friendly dragon reading a bedtime story to forest animals, soft watercolor textures, pastel palette, rounded shapes, whimsical illustration, light paper grain, heartwarming mood" --output "dragon.png"
 ```
 
 ---
 
-## 8. Done
+## 7. Test WebUI
 
-You now have a **Stable Diffusion 3.5 Turbo FastAPI inference server** running inside **Docker** with GPU acceleration.  
+After starting the WebUI container:
 
-Access your service at:
-
+```bash
+docker run --gpus all -p 7860:7860 sd3 python -m app.webui
 ```
-http://<Public-IP>:8000/generate?prompt=your+prompt+here
+
+Open in browser:
 ```
+http://<Public-IP>:7860
+```
+
+You will see an interactive interface to enter prompts and view generated images.
+
+---
+
+## 8. Done 🎉
+
+You now have a **Stable Diffusion 3.5 Turbo inference server** running in two modes:  
+
+- **FastAPI REST API** (port 8000)  
+- **Gradio WebUI** (port 7860)  
+
+Both are GPU-accelerated inside Docker on Nebius Compute.
