@@ -458,3 +458,9 @@ scripts/benchmark_chunks.sh
 - Encoder + pipeline overhead is small, so batching them saves little time.  
 - API overhead (HTTP, JSON, PNG encoding, zip) is constant and masks small efficiency gains.
 - Batching with chunk_size > 1 is valuable for convenience (sending multiple prompts in one request), but in current settings it does not significantly improve throughput.  
+
+---
+
+## 9. Clean up (optional)
+
+Open [Nebius Console](https://console.nebius.com/compute). Find the VM you want to delete. Click the three vertical dots (⋮) on the instance row and choose **Delete** — in the confirmation dialog, check **Delete boot disk** if you also want the instance disk removed.
