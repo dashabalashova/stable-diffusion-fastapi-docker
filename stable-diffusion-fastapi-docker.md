@@ -11,7 +11,7 @@ This way you can either call the model as a web service or interact with it in y
 ⚙️ **Hardware requirements**
 
 - A single modern NVIDIA GPU with at least **48 GB VRAM** is recommended (e.g., L40S).  
-- You do **not** need the very latest GPUs (like H200) — Stable Diffusion 3.5 Turbo runs efficiently on mid/high-tier cards.  
+- You do **not** need the very latest GPUs (like H200) – Stable Diffusion 3.5 Turbo runs efficiently on mid/high-tier cards.  
 - CPU-only execution is possible but extremely slow and not practical for real-time image generation.  
 
 📦 **Model size**
@@ -364,7 +364,7 @@ You can test the API directly from inside the VM using curl. This will send a GE
 curl "http://localhost:8000/generate?prompt=a+small+friendly+dragon+reading+a+bedtime+story+to+forest+animals,+soft+watercolor+textures,+pastel+palette,+rounded+shapes,+whimsical+illustration,+light+paper+grain,+heartwarming+mood" --output dragon.png
 ```
 
-### Python Client (local VM)
+### Python Client (from VM)
 
 Instead of curl, you can use the included Python client (client.py). Here spaces in the prompt can be written as normal text (no need for +):
 
@@ -384,6 +384,18 @@ pip install requests
 Run the client with the public IP of your VM. This will connect to port 8000 on the server and save the output locally:
 ```bash
 python3 client.py --host <Public-IP> --prompt "a small friendly dragon reading a bedtime story to forest animals, soft watercolor textures, pastel palette, rounded shapes, whimsical illustration, light paper grain, heartwarming mood" --output "dragon.png"
+```
+
+### Stop a running container
+
+Show all running containers with names, IDs and exposed ports:
+```bash
+docker ps
+```
+
+Stop:
+```bash
+docker stop <container-name-or-id>
 ```
 
 ---
@@ -418,12 +430,18 @@ Both are GPU-accelerated inside Docker on Nebius Compute.
 
 ## 8. Benchmark results and analysis
 
-We benchmarked two API modes on **20 prompts**:
+We benchmarked two API modes on 20 prompts. Before running the benchmark scripts, ensure they are executable. From the repository root run:
+```bash
+chmod +x scripts/benchmark_generate.sh scripts/benchmark_chunks.sh
+```
 
+Then run benchmarks:
+```bash
+scripts/benchmark_generate.sh
+scripts/benchmark_chunks.sh
+```
 - `/generate` -> one request per prompt, one image each  
-  (`scripts/benchmark_generate.sh`)  
-- `/generate_images` -> one request with batched prompts (`chunk_size`)  
-  (`scripts/benchmark_chunks.sh`)
+- `/generate_images` -> one request with batched prompts (`chunk_size`)
 
 ### Results
 
@@ -436,16 +454,8 @@ We benchmarked two API modes on **20 prompts**:
 
 ### Analysis
 
-- **Throughput is nearly identical** across all modes.  
-- **Batching does not accelerate inference** in this setup: Stable Diffusion 3.5 Turbo runs only 4 denoising steps, where the U-Net scales almost linearly with batch size.  
-- **Encoder + pipeline overhead is small**, so batching them saves little time.  
-- **API overhead (HTTP, JSON, PNG encoding, zip)** is constant and masks small efficiency gains.  
-
-### Conclusion
-
-Batching with `chunk_size > 1` is valuable for **convenience** (sending multiple prompts in one request), but in current settings it does **not significantly improve throughput**.  
-For larger speedups, you’d need:  
-
-- Higher denoising steps (e.g. 20–30),  
-- Heavier text encoders or longer prompts,  
-- Measuring raw pipeline time without API overhead.
+- Throughput is nearly identical across all modes.  
+- Batching does not accelerate inference in this setup: Stable Diffusion 3.5 Turbo runs only 4 denoising steps, where the U-Net scales almost linearly with batch size.  
+- Encoder + pipeline overhead is small, so batching them saves little time.  
+- API overhead (HTTP, JSON, PNG encoding, zip) is constant and masks small efficiency gains.
+- Batching with chunk_size > 1 is valuable for convenience (sending multiple prompts in one request), but in current settings it does not significantly improve throughput.  
