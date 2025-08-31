@@ -2,6 +2,22 @@
 
 This tutorial explains how to deploy **Stable Diffusion 3.5 Turbo** as a **FastAPI service** inside **Docker** on a GPU-enabled VM (Nebius Compute in this example).
 
+The service has **two interfaces**:  
+- **FastAPI** REST API – lightweight, script-friendly interface for programmatic access (cURL, Python client).  
+- **Gradio WebUI** – interactive browser-based interface for quick prototyping and visualization.  
+
+This way you can either call the model as a web service or interact with it in your browser.
+
+⚙️ **Hardware requirements**
+
+- A single modern NVIDIA GPU with at least **48 GB VRAM** is recommended (e.g., L40S).  
+- You do **not** need the very latest GPUs (like H200) — Stable Diffusion 3.5 Turbo runs efficiently on mid/high-tier cards.  
+- CPU-only execution is possible but extremely slow and not practical for real-time image generation.  
+
+📦 **Model size**
+
+The model [adamo1139/stable-diffusion-3.5-large-turbo-ungated](https://huggingface.co/adamo1139/stable-diffusion-3.5-large-turbo-ungated/tree/main/) is around **26 GB** when downloaded from Hugging Face Hub. Make sure you have enough disk space (at least 64 GB free recommended, considering model + cache + Docker layers).
+
 ![Dragon](images/dragon.png)
 
 ---
@@ -69,6 +85,8 @@ cd stable-diffusion-fastapi-docker
 
 ### Dockerfile
 
+The `Dockerfile` defines the container image and all the steps required to build the runtime environment:
+
 ```dockerfile
 FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime
 
@@ -89,9 +107,19 @@ EXPOSE 8000 7860
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
+* Base image: uses the official PyTorch image with CUDA 12.8 and cuDNN 9 for GPU acceleration.
+* WORKDIR: sets /app as the working directory inside the container.
+* Dependencies: installs requirements.txt plus the optimized xformers library for fast attention.
+* ENV: enables hf_transfer for faster downloads from Hugging Face Hub.
+* COPY app: copies your source code into the container.
+* EXPOSE: opens ports 8000 (FastAPI) and 7860 (Gradio).
+* CMD: by default starts the FastAPI server, but you can override the command at runtime (for example to launch Gradio WebUI instead).
+
 ---
 
 ### requirements.txt
+
+The `requirements.txt` file lists all Python dependencies:
 
 ```txt
 # Hugging Face stack
@@ -113,15 +141,27 @@ hf_transfer
 
 # Web UI
 gradio
+
+# Client
+requests
 ```
+
+* Hugging Face stack: model loading, tokenization, inference.
+* TorchVision: essential computer vision utilities.
+* API stack: FastAPI + Uvicorn to serve the model, Pillow to work with images, hf_transfer for faster downloads.
+* Gradio: provides a simple web UI.
+* Requests: required by the included Python client (client.py).
 
 ---
 
 ### app/sd3.py
 
+The `app/sd3.py` file loads the Stable Diffusion 3.5 Turbo pipeline from Hugging Face and provides a helper function to generate images:
+
 ```python
 import torch
 from diffusers import StableDiffusion3Pipeline
+import time
 
 MODEL_ID = "adamo1139/stable-diffusion-3.5-large-turbo-ungated"
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -139,17 +179,46 @@ def generate_image(prompt: str, num_inference_steps: int = 4):
         guidance_scale=0.0
     ).images[0]
     return image
+
+def chunked(iterable, size):
+    for i in range(0, len(iterable), size):
+        yield iterable[i:i + size]
+
+def generate_images(prompts: list[str], chunk_size: int = 4, num_inference_steps: int = 4):
+    results = []
+    for sub_prompts in chunked(prompts, chunk_size):
+        images = pipe(
+            sub_prompts,
+            num_images_per_prompt=1,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=0.0,
+        ).images
+        results.extend(images)
+        torch.cuda.empty_cache()
+    return results
 ```
+
+* `MODEL_ID` points to the chosen model on Hugging Face Hub (adamo1139/stable-diffusion-3.5-large-turbo-ungated).
+* Device selection: uses GPU (cuda) if available, otherwise CPU.
+* `torch_dtype`: `float16` on GPU for efficiency, `float32` on CPU.
+* `generate_image()` takes a text prompt, runs inference with a small number of steps (fast “turbo mode”), and returns a PIL image.
+* `guidance_scale=0.0` disables classifier-free guidance for maximum speed.
+* `generate_images()` generates one image per prompt from a list -- splits prompts into chunks (to fit GPU memory), processes each chunk in one batch call, returns a flat list of PIL images.
 
 ---
 
 ### app/main.py
 
+The `app/main.py` file defines the FastAPI service:
+
 ```python
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from io import BytesIO
-from .sd3 import generate_image
+from .sd3 import generate_image, generate_images
+import time
+import zipfile, io
+from pydantic import BaseModel
 
 app = FastAPI()
 
@@ -164,11 +233,39 @@ def generate(prompt: str):
     image.save(buf, format="PNG")
     buf.seek(0)
     return StreamingResponse(buf, media_type="image/png")
+
+class PromptsRequest(BaseModel):
+    prompts: list[str]
+    chunk_size: int = 4
+
+@app.post("/generate_images")
+def generate_images_endpoint(req: PromptsRequest):
+    images = generate_images(req.prompts, chunk_size=req.chunk_size)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for i, img in enumerate(images):
+            img_buf = io.BytesIO()
+            img.save(img_buf, format="PNG")
+            zf.writestr(f"image_{i}.png", img_buf.getvalue())
+    buf.seek(0)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=images.zip"}
+    )
 ```
+
+* `/` route provides a health check.
+* `/generate` accepts a prompt, calls the model, and streams back a PNG image.
+* `/generate_images` accepts a JSON body with a list of prompts and optional `chunk_size`, generates one image per prompt (batched in chunks to fit GPU), returns a zip archive with all images in PNG format.  
 
 ---
 
 ### app/webui.py
+
+The `app/webui.py` file provides an interactive Gradio-based WebUI:
 
 ```python
 import gradio as gr
@@ -192,9 +289,14 @@ if __name__ == "__main__":
     launch_gradio()
 ```
 
+* Runs Gradio on port 7860.
+* Lets you enter a text prompt and see generated images directly in the browser.
+
 ---
 
 ### client.py
+
+The `client.py` file provides a simple Python client for testing the API:
 
 ```python
 import argparse
@@ -223,6 +325,10 @@ if __name__ == "__main__":
     main()
 ```
 
+* Accepts arguments (prompt, host, port, output).
+* Calls the FastAPI /generate endpoint.
+* Saves the resulting image to disk.
+
 ---
 
 ## 4. Build Docker Image
@@ -242,25 +348,17 @@ docker build -t sd3 .
 
 ---
 
-## 5. Run Service (Options)
+## 5. Run API (FastAPI)
 
-### Run API (FastAPI)
+Start the API server inside Docker (it will listen on port 8000):
 
 ```bash
 docker run --gpus all -p 8000:8000 sd3 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-### Run WebUI (Gradio)
-
-```bash
-docker run --gpus all -p 7860:7860 sd3 python -m app.webui
-```
-
----
-
-## 6. Test API
-
 ### Curl (from VM)
+
+You can test the API directly from inside the VM using curl. This will send a GET request with your prompt and save the result as **dragon.png**:
 
 ```bash
 curl "http://localhost:8000/generate?prompt=a+small+friendly+dragon+reading+a+bedtime+story+to+forest+animals,+soft+watercolor+textures,+pastel+palette,+rounded+shapes,+whimsical+illustration,+light+paper+grain,+heartwarming+mood" --output dragon.png
@@ -268,25 +366,29 @@ curl "http://localhost:8000/generate?prompt=a+small+friendly+dragon+reading+a+be
 
 ### Python Client (local VM)
 
+Instead of curl, you can use the included Python client (client.py). Here spaces in the prompt can be written as normal text (no need for +):
+
 ```bash
 python3 client.py --prompt "a small friendly dragon reading a bedtime story to forest animals, soft watercolor textures, pastel palette, rounded shapes, whimsical illustration, light paper grain, heartwarming mood" --output "dragon.png"
 ```
 
 ### Python Client (remote from your laptop)
 
+If you want to call the API from your own laptop (not from inside the VM).
+
 Install dependency:
 ```bash
 pip install requests
 ```
 
-Run with public IP:
+Run the client with the public IP of your VM. This will connect to port 8000 on the server and save the output locally:
 ```bash
 python3 client.py --host <Public-IP> --prompt "a small friendly dragon reading a bedtime story to forest animals, soft watercolor textures, pastel palette, rounded shapes, whimsical illustration, light paper grain, heartwarming mood" --output "dragon.png"
 ```
 
 ---
 
-## 7. Test WebUI
+## 6. Run WebUI (Gradio)
 
 After starting the WebUI container:
 
@@ -303,7 +405,7 @@ You will see an interactive interface to enter prompts and view generated images
 
 ---
 
-## 8. Done
+## 7. Done
 
 You now have a **Stable Diffusion 3.5 Turbo inference server** running in two modes:  
 
@@ -311,3 +413,39 @@ You now have a **Stable Diffusion 3.5 Turbo inference server** running in two mo
 - **Gradio WebUI** (port 7860)  
 
 Both are GPU-accelerated inside Docker on Nebius Compute.
+
+---
+
+## 8. Benchmark results and analysis
+
+We benchmarked two API modes on **20 prompts**:
+
+- `/generate` -> one request per prompt, one image each  
+  (`scripts/benchmark_generate.sh`)  
+- `/generate_images` -> one request with batched prompts (`chunk_size`)  
+  (`scripts/benchmark_chunks.sh`)
+
+### Results
+
+| Mode / chunk_size | Time (s) | Throughput (img/sec) |
+|-------------------|----------|-----------------------|
+| `/generate`       | 45       | 0.44                  |
+| chunk_size = 1    | 44       | 0.45                  |
+| chunk_size = 2    | 45       | 0.44                  |
+| chunk_size = 5    | 47       | 0.42                  |
+
+### Analysis
+
+- **Throughput is nearly identical** across all modes.  
+- **Batching does not accelerate inference** in this setup: Stable Diffusion 3.5 Turbo runs only 4 denoising steps, where the U-Net scales almost linearly with batch size.  
+- **Encoder + pipeline overhead is small**, so batching them saves little time.  
+- **API overhead (HTTP, JSON, PNG encoding, zip)** is constant and masks small efficiency gains.  
+
+### Conclusion
+
+Batching with `chunk_size > 1` is valuable for **convenience** (sending multiple prompts in one request), but in current settings it does **not significantly improve throughput**.  
+For larger speedups, you’d need:  
+
+- Higher denoising steps (e.g. 20–30),  
+- Heavier text encoders or longer prompts,  
+- Measuring raw pipeline time without API overhead.
