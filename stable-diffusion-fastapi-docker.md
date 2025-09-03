@@ -115,8 +115,6 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 * EXPOSE: opens ports 8000 (FastAPI) and 7860 (Gradio).
 * CMD: by default starts the FastAPI server, but you can override the command at runtime (for example to launch Gradio WebUI instead).
 
----
-
 ### requirements.txt
 
 The `requirements.txt` file lists all Python dependencies:
@@ -151,8 +149,6 @@ requests
 * API stack: FastAPI + Uvicorn to serve the model, Pillow to work with images, hf_transfer for faster downloads.
 * Gradio: provides a simple web UI.
 * Requests: required by the included Python client (client.py).
-
----
 
 ### app/sd3.py
 
@@ -204,8 +200,6 @@ def generate_images(prompts: list[str], chunk_size: int = 4, num_inference_steps
 * `generate_image()` takes a text prompt, runs inference with a small number of steps (fast “turbo mode”), and returns a PIL image.
 * `guidance_scale=0.0` disables classifier-free guidance for maximum speed.
 * `generate_images()` generates one image per prompt from a list -- splits prompts into chunks (to fit GPU memory), processes each chunk in one batch call, returns a flat list of PIL images.
-
----
 
 ### app/main.py
 
@@ -261,8 +255,6 @@ def generate_images_endpoint(req: PromptsRequest):
 * `/generate` accepts a prompt, calls the model, and streams back a PNG image.
 * `/generate_images` accepts a JSON body with a list of prompts and optional `chunk_size`, generates one image per prompt (batched in chunks to fit GPU), returns a zip archive with all images in PNG format.  
 
----
-
 ### app/webui.py
 
 The `app/webui.py` file provides an interactive Gradio-based WebUI:
@@ -292,42 +284,27 @@ if __name__ == "__main__":
 * Runs Gradio on port 7860.
 * Lets you enter a text prompt and see generated images directly in the browser.
 
----
+### Python client example
 
-### client.py
-
-The `client.py` file provides a simple Python client for testing the API:
+You can call the FastAPI server directly from Python. Replace `<HOST>` and `<PORT>` with your server address and port:
 
 ```python
-import argparse
 import requests
 
-def main():
-    parser = argparse.ArgumentParser(description="Stable Diffusion 3.5 Turbo client")
-    parser.add_argument("--prompt", type=str, required=True, help="Text prompt for image generation")
-    parser.add_argument("--host", type=str, default="localhost", help="API host (default: localhost)")
-    parser.add_argument("--port", type=int, default=8000, help="API port (default: 8000)")
-    parser.add_argument("--output", type=str, default="output.png", help="Output image filename")
-    args = parser.parse_args()
+api_url = "http://<HOST>:<PORT>/generate"
+prompt = "a small friendly dragon reading a bedtime story to forest animals"
 
-    api_url = f"http://{args.host}:{args.port}/generate"
-    print(f"➡️ Sending request to {api_url} ...")
+response = requests.get(api_url, params={"prompt": prompt})
+if response.status_code == 200:
+    with open("dragon.png", "wb") as f:
+        f.write(response.content)
+    print("✅ Saved as dragon.png")
+else:
+    print("❌ Error:", response.status_code, response.text)
 
-    response = requests.get(api_url, params={"prompt": args.prompt})
-    if response.status_code == 200:
-        with open(args.output, "wb") as f:
-            f.write(response.content)
-        print(f"✅ Image saved as {args.output}")
-    else:
-        print("❌ Error:", response.status_code, response.text)
-
-if __name__ == "__main__":
-    main()
 ```
 
-* Accepts arguments (prompt, host, port, output).
-* Calls the FastAPI /generate endpoint.
-* Saves the resulting image to disk.
+This minimal client sends a text prompt to the `/generate` endpoint and saves the generated image as `dragon.png`. For a full CLI version with argument parsing, see `client.py`.
 
 ---
 
